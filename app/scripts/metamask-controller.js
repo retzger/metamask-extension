@@ -202,7 +202,7 @@ module.exports = class MetamaskController extends EventEmitter {
     this.keyringController.memStore.subscribe((s) => this._onKeyringControllerUpdate(s))
 
     this.permissionsController = new PermissionsController({
-      keyringController: this.keyringController,
+      getKeyringAccounts: this.keyringController.getAccounts.bind(this.keyringController),
       platform: opts.platform,
       notifyDomain: this.notifyConnections.bind(this),
       notifyAllDomains: this.notifyAllConnections.bind(this),

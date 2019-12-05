@@ -7,7 +7,7 @@ const { ethErrors } = require('eth-json-rpc-errors')
 
 const getRestrictedMethods = require('./restrictedMethods')
 const createMethodMiddleware = require('./methodMiddleware')
-const createLoggerMiddleware = require('./loggerMiddleware')
+const PermissionsLogController = require('./permissionsLog')
 
 // Methods that do not require any permissions to use:
 const SAFE_METHODS = require('./permissions-safe-methods.json')
@@ -26,21 +26,54 @@ class PermissionsController {
 
   constructor (
     {
-      platform, notifyDomain, notifyAllDomains, keyringController,
+      platform, notifyDomain, notifyAllDomains, getKeyringAccounts,
     } = {},
     restoredPermissions = {},
     restoredState = {}) {
+
     this.store = new ObservableStore({
       [METADATA_STORE_KEY]: restoredState[METADATA_STORE_KEY] || {},
       [LOG_STORE_KEY]: restoredState[LOG_STORE_KEY] || [],
       [HISTORY_STORE_KEY]: restoredState[HISTORY_STORE_KEY] || {},
     })
-    this.notifyDomain = notifyDomain
+
+    this._notifyDomain = notifyDomain
     this.notifyAllDomains = notifyAllDomains
-    this.keyringController = keyringController
+    this.getKeyringAccounts = getKeyringAccounts
     this._platform = platform
     this._restrictedMethods = getRestrictedMethods(this)
+    this.permissionsLogController = new PermissionsLogController({
+      walletPrefix: WALLET_METHOD_PREFIX,
+      restrictedMethods: Object.keys(this._restrictedMethods),
+      ignoreMethods: [ 'wallet_sendDomainMetadata' ],
+      store: this.store,
+      logStoreKey: LOG_STORE_KEY,
+      historyStoreKey: HISTORY_STORE_KEY,
+    })
     this._initializePermissions(restoredPermissions)
+  }
+
+  notifyDomain (origin, payload) {
+
+    // if the accounts changed from the perspective of the dapp,
+    // update "last seen" time for the origin and account(s)
+    // exception: no accounts -> no times to update
+    if (
+      payload.method === ACCOUNTS_CHANGED_NOTIFICATION &&
+      payload.result && payload.result.length > 0
+    ) {
+      this.permissionsLogController.updateAccountsHistory(
+        origin, payload.result
+      )
+    }
+
+    this._notifyDomain(origin, payload)
+
+    // NOTE:
+    // we don't check for accounts changing in the notifyAllDomains case,
+    // because the log only records when accounts were last seen,
+    // and the accounts only change for all domains at once when permissions
+    // are removed
   }
 
   createMiddleware ({ origin, extensionId }) {
@@ -56,14 +89,7 @@ class PermissionsController {
 
     const engine = new JsonRpcEngine()
 
-    engine.push(createLoggerMiddleware({
-      walletPrefix: WALLET_METHOD_PREFIX,
-      restrictedMethods: Object.keys(this._restrictedMethods),
-      ignoreMethods: [ 'wallet_sendDomainMetadata' ],
-      store: this.store,
-      logStoreKey: LOG_STORE_KEY,
-      historyStoreKey: HISTORY_STORE_KEY,
-    }))
+    engine.push(this.permissionsLogController.createMiddleware())
 
     engine.push(createMethodMiddleware({
       store: this.store,
@@ -289,7 +315,7 @@ class PermissionsController {
     }
 
     // assert accounts exist
-    const allAccounts = await this.keyringController.getAccounts()
+    const allAccounts = await this.getKeyringAccounts()
     accounts.forEach(acc => {
       if (!allAccounts.includes(acc)) {
         throw new Error(`Unknown account: ${acc}`)
